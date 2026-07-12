@@ -1,0 +1,107 @@
+name: Build and Deploy API
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-and-push:
+    if: startsWith(github.event.release.tag_name, 'prd-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Checkout geonera-deploy (for Dockerfile)
+        uses: actions/checkout@v4
+        with:
+          repository: igeoaiti/geonera-deploy
+          path: geonera-deploy
+
+      - name: Create GitHub Deployment
+        uses: chrnorm/deployment-action@v2
+        id: deployment
+        with:
+          token: '${{ github.token }}'
+          environment: production
+          description: 'Deploying Geonera API'
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract version from Git Tag
+        id: package-version
+        run: |
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          VERSION="${TAG_NAME#prd-v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./geonera-deploy/docker/api.Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            sansalfian/geonera-api:${{ steps.package-version.outputs.version }}
+            sansalfian/geonera-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update Version in geonera-deploy
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
+        run: |
+          if [ -z "$API_TOKEN_GITHUB" ]; then
+            echo "API_TOKEN_GITHUB secret is not set. Skipping update of geonera-deploy repository."
+            exit 0
+          fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Clone geonera-deploy repository
+          git clone "https://x-access-token:${API_TOKEN_GITHUB}@github.com/igeoaiti/geonera-deploy.git" geonera-deploy-repo
+          cd geonera-deploy-repo
+          
+          # Update version in .env and .env.example
+          sed -i "s/API_VERSION=.*/API_VERSION=${{ steps.package-version.outputs.version }}/g" .env
+          sed -i "s/API_VERSION=.*/API_VERSION=${{ steps.package-version.outputs.version }}/g" .env.example
+          
+          # Commit and Push
+          git add .env .env.example
+          git commit -m "chore: bump API version to ${{ steps.package-version.outputs.version }}" || echo "No changes to commit"
+          git push origin main
+
+      - name: Trigger Portainer Redeploy Webhook
+        run: |
+          curl -X POST "${{ secrets.PORTAINER_WEBHOOK_URL }}"
+
+      - name: Update deployment status (success)
+        if: success()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: '${{ github.token }}'
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: 'success'
+
+      - name: Update deployment status (failure)
+        if: failure()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: '${{ github.token }}'
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: 'failure'
