@@ -15,12 +15,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Checkout geonera-deploy (for Dockerfile)
-        uses: actions/checkout@v4
-        with:
-          repository: igeoaiti/geonera-deploy
-          path: geonera-deploy
-
       - name: Create GitHub Deployment
         uses: chrnorm/deployment-action@v2
         id: deployment
@@ -29,6 +23,14 @@ jobs:
           environment: production
           description: 'Deploying Geonera API'
           ref: ${{ github.event.release.tag_name }}
+
+      - name: Checkout geonera-deploy (for Dockerfile)
+        uses: actions/checkout@v4
+        with:
+          repository: igeoaiti/geonera-deploy
+          token: ${{ secrets.API_TOKEN_GITHUB }}
+          ref: main
+          path: geonera-deploy
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -99,7 +101,7 @@ jobs:
           state: 'success'
 
       - name: Update deployment status (failure)
-        if: failure()
+        if: failure() && steps.deployment.outputs.deployment_id != ''
         uses: chrnorm/deployment-status@v2
         with:
           token: '${{ github.token }}'
